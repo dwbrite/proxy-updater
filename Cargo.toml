@@ -1,0 +1,19 @@
+[package]
+name = "proxy-updater"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.36.0", features = ["rt", "rt-multi-thread", "macros"] }
+kube = { version = "0.88.1", features = ["runtime", "derive"] }
+k8s-openapi = { version = "0.21.1", features = ["v1_29"] }
+lazy_static = "1.4.0"
+anyhow = "1.0.80"
+public-ip = "0.2.2"
+handlebars = "5.1.0"
+serde = { version = "1.0.197", features = ["derive"] }
+ssh2 = "0.9.4"
+time = "0.3.34"
+
