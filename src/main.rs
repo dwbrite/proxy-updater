@@ -4,14 +4,14 @@ use std::net::{IpAddr, TcpStream};
 use std::time::Duration;
 use handlebars::Handlebars;
 use lazy_static::lazy_static;
-use kube::{Api, Client};
+use kube::{Api, Client, Config};
 use k8s_openapi::api::core::v1::{Secret, Service};
 use serde::{Deserialize, Serialize};
 use ssh2::Session;
 
 lazy_static! {
-    static ref SECRET_NAME: String = env::var("SECRET_NAME").unwrap_or("external-proxy".to_string());
-    static ref SECRET_NAMESPACE: String = env::var("SECRET_NAMESPACE").unwrap_or("proxy-server-ssh-key".to_string());
+    static ref SECRET_NAMESPACE: String = env::var("SECRET_NAMESPACE").unwrap_or("external-proxy".to_string());
+    static ref SECRET_NAME: String = env::var("SECRET_NAME").unwrap_or("proxy-server-ssh-key".to_string());
     static ref PROXY_HOST: String = env::var("PROXY_HOST").unwrap_or("tiny.pizza".to_string());
     static ref PROXY_USER: String = env::var("PROXY_USER").unwrap_or("root".to_string());
 }
@@ -45,18 +45,23 @@ async fn generate_nginx_config(client: Client) -> String {
 }
 
 async fn start_ssh_session(client: Client) -> Result<Session, anyhow::Error> {
+    println!("Looking for ssh-privatekey in {}/{}", *SECRET_NAMESPACE, *SECRET_NAME);
     let ssh_key_secret: Secret = Api::namespaced(client, &SECRET_NAMESPACE).get(&SECRET_NAME).await?;
     let ssh_key_bytes = ssh_key_secret.data.unwrap().get("ssh-privatekey").unwrap().clone().0;
     let ssh_key = String::from_utf8(ssh_key_bytes).unwrap();
+    println!("Found ssh-privatekey");
 
+    println!("Starting ssh session to {}", *PROXY_HOST);
     let tcp = TcpStream::connect(format!("{}:22", *PROXY_HOST)).unwrap();
     println!("Connected to proxy server: {}", *PROXY_HOST);
 
-    let mut session = ssh2::Session::new().unwrap();
+    let mut session = Session::new().unwrap();
     session.set_tcp_stream(tcp);
     session.handshake().unwrap();
     session.userauth_pubkey_memory("root", None, &ssh_key, None).unwrap();
     println!("SSH Authorized");
+    println!("---");
+
     Ok(session)
 }
 
@@ -76,7 +81,7 @@ fn write_config(nginx_config: String, session: &Session) -> Result<(), anyhow::E
         None,
     )?;
     channel.write_all(nginx_config.as_bytes())?;
-    println!("Config changed to: {}", nginx_config);
+    println!("Config changed to: \n```{}\n```", nginx_config);
     Ok(())
 }
 
@@ -94,12 +99,27 @@ async fn recieve_remote_nginx_config(client: Client) -> Result<(), anyhow::Error
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let client = Client::try_default().await?;
+    println!("Creating k8s client...");
+    let config = Config::infer().await?;
+    println!("Config inferred: {}", config.cluster_url);
+    let client = Client::try_from(config)?;
+    println!("K8s client created");
+
+    println!("---");
 
     unsafe {
         recieve_remote_nginx_config(client.clone()).await?;
-        println!("Remote config found\n```\n{NGINX_CONFIG}\n```");
+        println!("Remote config found:\n{NGINX_CONFIG}\n---");
     }
+
+    let nginx_config = generate_nginx_config(client.clone()).await;
+    unsafe {
+        if nginx_config == NGINX_CONFIG {
+            println!("Matches proposed config")
+        }
+    }
+
+    println!("Waiting for config changes...");
 
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
